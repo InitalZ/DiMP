@@ -92,7 +92,7 @@ Optional shell helpers: `run_pretrain_msr.sh`, `run_finetune_msr.sh`. Full layou
 
 ### Self-supervised pretraining
 
-> **Important:** In `0-pretraining-dp.py`, only `--model` names starting with **`Full_`** select **`DiMPModelFull`** (paper DiMP: center + motion diffusion). Any other name (including the default `pretrain`) uses **`DiMPModel`**, an older SHOT-style baseline without the full diffusion objectives. The commands below use **`Full_*`** so Quick Start matches the paper.
+`0-pretraining-dp.py` always trains **`DiMPModelFull`** (center + patch / motion diffusion). The `--model` flag is only the **run name** (checkpoint subdirectory under `--log-dir`).
 
 **HOI4D** (requires `--data-meta`):
 

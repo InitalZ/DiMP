@@ -13,7 +13,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(BASE_DIR, 'models'))
 sys.path.append(os.path.join(BASE_DIR, 'modules'))
 
-from models.DiMP_Model import DiMPModel
+from models.DiMP_Model_Full import DiMPModelFull
 from datasets.hoi4d import HOI4DSubject
 from datasets.msr import MSRAction3D
 from logger import setup_logger
@@ -155,18 +155,15 @@ def main(args):
     logger.info(f'Dataset: {dataset_name}')
     logger.info(f'num_classes={num_classes}, train={len(train_dataset)}, val={len(val_dataset)}')
 
-    ModelCls = DiMPModel
-
-    model = ModelCls(
+    model = DiMPModelFull(
         radius=args.radius, nsamples=args.nsamples, spatial_stride=args.spatial_stride,
         temporal_kernel_size=args.temporal_kernel_size, temporal_stride=args.temporal_stride,
         en_emb_dim=args.en_dim, en_depth=args.en_depth, en_heads=args.en_heads,
         en_head_dim=args.en_head_dim, en_mlp_dim=args.en_mlp_dim,
-        de_emb_dim=256, de_depth=3, de_heads=4, de_head_dim=64, de_mlp_dim=512,
         num_classes=num_classes,
         dropout1=args.dropout1,
         dropout_cls=args.dropout_cls,
-        pretraining=False
+        pretraining=False,
     ).cuda()
 
     if args.finetune:

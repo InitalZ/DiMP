@@ -118,7 +118,7 @@ Use separate lists for train / val as needed (`--data-meta`, `--meta-train`, `--
 
 **Paper (appendix) alignment:** **Masking ratio 0.60.** **HOI4D and MSR pretraining** use **1,024 points per frame**. **Batch size 128** is reported on **8× A100**; smaller GPUs should reduce batch size (examples below use 32 with an explicit comment).
 
-> **DiMP vs. baseline:** `--model` must start with **`Full_`** to use **`DiMPModelFull`** (paper DiMP). Otherwise the script uses **`DiMPModel`** (SHOT-style baseline). The examples below use **`Full_pretrain`** / **`Full_MSR_pretrain`**.
+Pretraining always uses **`DiMPModelFull`**. `--model` is only an experiment / run name (log subdirectory); examples below keep **`Full_pretrain`** / **`Full_MSR_pretrain`** for familiar paths.
 
 ### 4.1 HOI4D
 
@@ -282,7 +282,7 @@ Fixed in this repo via `torch.linalg.eigh` on PyTorch 2.x. If it persists, use t
 - Raise `--workers` (e.g. 16, 32)
 - Put data on SSD or local disk
 
-### Q6: Single-GPU `'DiMPModel' object has no attribute 'module'`
+### Q6: Single-GPU `'DiMPModelFull' object has no attribute 'module'`
 
 On one GPU `model` may not be wrapped in `DataParallel`, but `add_weight_decay` uses `model.module`. You can always wrap when CUDA is available:
 

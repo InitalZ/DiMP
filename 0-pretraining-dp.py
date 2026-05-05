@@ -14,7 +14,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(BASE_DIR, 'models'))
 sys.path.append(os.path.join(BASE_DIR, 'modules'))
 
-from models.DiMP_Model import DiMPModel
 from models.DiMP_Model_Full import DiMPModelFull
 from data_aug.DiMP_HOI4D import DiMPHOI4DSubject
 from data_aug.DiMP_MSR import DiMPPretrainDataset as DiMPMSRAction3D
@@ -68,7 +67,7 @@ def get_args():
 
     parser.add_argument(
         '--model', default='pretrain', type=str,
-        help='Run name (checkpoints under log_dir/model/). Use a Full_* prefix for DiMPModelFull (paper DiMP); other names use DiMPModel (baseline).'
+        help='Run name; checkpoints are saved under log_dir/model/.'
     )
     parser.add_argument('--center-diffusion-mode', default='full', type=str,
                        choices=['base', 'vis_only', 'mask_only', 'full'],
@@ -150,11 +149,6 @@ def main(args):
     logger.info(f'Dataset: {dataset_name}')
     logger.info(f'Train clips: {len(train_dataset)}')
 
-    if args.model.startswith('Full_'):
-        ModelCls = DiMPModelFull
-    else:
-        ModelCls = DiMPModel
-
     model_kwargs = dict(
         radius=args.radius, nsamples=args.nsamples, spatial_stride=args.spatial_stride,
         temporal_kernel_size=args.temporal_kernel_size, temporal_stride=args.temporal_stride,
@@ -165,17 +159,16 @@ def main(args):
         mask_ratio=args.mask_ratio,
         dropout1=args.dropout1,
         dropout_cls=args.dropout_cls,
-        pretraining=True
+        pretraining=True,
+        center_diffusion_mode=args.center_diffusion_mode,
+        gamma_center=args.gamma_center,
+        motion_weight=args.motion_weight,
+        use_patch_diffusion=args.use_patch_diffusion,
+        use_motion_diffusion=args.use_motion_diffusion,
+        motion_h_intervals=args.motion_h_intervals,
+        diffusion_T=args.diffusion_T,
     )
-    if ModelCls is DiMPModelFull:
-        model_kwargs['center_diffusion_mode'] = args.center_diffusion_mode
-        model_kwargs['gamma_center'] = args.gamma_center
-        model_kwargs['motion_weight'] = args.motion_weight
-        model_kwargs['use_patch_diffusion'] = args.use_patch_diffusion
-        model_kwargs['use_motion_diffusion'] = args.use_motion_diffusion
-        model_kwargs['motion_h_intervals'] = args.motion_h_intervals
-        model_kwargs['diffusion_T'] = args.diffusion_T
-    model = ModelCls(**model_kwargs).cuda()
+    model = DiMPModelFull(**model_kwargs).cuda()
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay

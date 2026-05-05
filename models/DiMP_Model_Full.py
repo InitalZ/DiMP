@@ -126,7 +126,6 @@ class ContrastiveLearningModelFull(nn.Module):
             operator='+', spatial_pooling='max', temporal_pooling='max',
         )
 
-        self.encoder_pos_linear = nn.Linear(4, en_emb_dim)
         self.encoder_transformer = VisMaskTransformer(
             en_emb_dim, en_depth, en_heads, en_head_dim, en_mlp_dim, dropout=dropout1,
         )
