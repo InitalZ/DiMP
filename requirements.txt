@@ -1,0 +1,8 @@
+numpy>=1.19.0
+timm>=0.4.0
+einops>=0.4.0
+tensorboardX>=2.0
+pyyaml>=5.0
+termcolor>=1.1.0
+opencv-python>=4.5.0
+matplotlib>=3.4.0

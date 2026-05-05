@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# PyTorch weights & checkpoints
+*.pth
+*.pt
+*.ckpt
+checkpoints/
+logs/
+log_*/
+runs/
+
+# Datasets (large; store separately)
+*.npz
+*.npy
+*.bin
+*.h5
+*.hdf5
+data/
+MSRAction3D/
+HOI4D/
+hoi4d_npz/
+
+# Temp files
+*.log
+nohup.out
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment
+.env
+.venv
+venv/
+env/
+conda_env/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Built CUDA extensions (compile locally)
+modules/pointnet2/*.egg-info/
+modules/build/
+extensions/chamfer_dist/dist/
+extensions/chamfer_dist/*.egg-info/
