@@ -132,6 +132,7 @@ cd /path/to/DiMP
 python 0-pretraining-dp.py \
     --dataset hoi4d \
     --data-path /path/to/DiMP/hoi4d_npz \
+    --motion-path /path/to/DiMP/hoi4d_motion \
     --data-meta ./datasets/hoi4d_pretrain.list \
     --log-dir ./logs \
     --model Full_pretrain \
@@ -149,6 +150,7 @@ python 0-pretraining-dp.py \
 python 0-pretraining-dp.py \
     --dataset msr \
     --data-path /path/to/DiMP/MSRAction3D/msr_npz \
+    --motion-path /path/to/DiMP/MSRAction3D/msr_motion \
     --log-dir ./logs \
     --model Full_MSR_pretrain \
     --radius 0.1 \
@@ -167,6 +169,7 @@ More flags (center / motion diffusion): `python 0-pretraining-dp.py --help`.
 | -------- | ---- |
 | `--data-path` | Flat NPZ folder: `/path/to/DiMP/hoi4d_npz` (HOI4D) or `.../DiMP/MSRAction3D/msr_npz` (MSR) |
 | `--data-meta` | Meta list (**required** for `hoi4d`) |
+| `--motion-path` | Offline CorrNet3D displacement NPZ folder (key `motion`, same stems / layout as `--data-path`); **required** unless `--no-motion-diffusion` |
 | `--dataset` | `hoi4d` or `msr` |
 | `--num-points` | **1024** for pretraining (appendix); script default matches paper |
 | `--log-dir` | Logs and checkpoints |
@@ -228,7 +231,7 @@ python 1-finetune-dp.py \
 - **`--num-points`:** **1024** during **pretraining** (appendix); **2048** for **HOI4D action segmentation** and **MSR / HOI4D classification** finetuning (appendix). **HOI4D semantic segmentation** uses **4096** (`2-finetune-sem-seg.py`).
 - If you changed `--num-points` during pretraining, align finetuning for a strict reproduction or follow the appendix table exactly.
 
-Semantic segmentation (**4096** pts/frame) and temporal action segmentation (**2048** pts/frame):
+Semantic segmentation (**4096** pts/frame) and temporal action segmentation (**2048** pts/frame, **150**-frame sequences with consecutive frames — defaults `--clip-len 150 --clip-step 150 --frame-stride 1`; lower `--batch-size` if OOM). All finetuning scripts default to `--radius 0.1`, matching pretraining:
 
 ```bash
 python 2-finetune-sem-seg.py \
@@ -318,6 +321,7 @@ The repo may include `run_pretrain.sh` (HOI4D). Example inline:
 python 0-pretraining-dp.py \
     --dataset hoi4d \
     --data-path "$1" \
+    --motion-path "$2" \
     --data-meta ./datasets/hoi4d_pretrain.list \
     --log-dir ./log_test \
     --model Full_pretrain \

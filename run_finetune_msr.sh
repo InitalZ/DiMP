@@ -29,5 +29,4 @@ python "$PROJECT_ROOT/1-finetune-dp.py" \
     --batch-size 32 \
     --epochs "$EPOCHS" \
     --lr 0.0005 \
-    --lr-warmup-epochs 2 \
-    --lr-milestones 20 25
+    --lr-warmup-epochs 2

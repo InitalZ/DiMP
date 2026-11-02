@@ -15,7 +15,7 @@ from timm.models.layers import trunc_normal_
 
 class SemSegModel(nn.Module):
     def __init__(self,
-                 radius=0.05, nsamples=32, spatial_stride=32,
+                 radius=0.1, nsamples=32, spatial_stride=32,
                  temporal_kernel_size=3, temporal_stride=1,
                  en_emb_dim=384, en_depth=6, en_heads=6,
                  en_head_dim=64, en_mlp_dim=768,

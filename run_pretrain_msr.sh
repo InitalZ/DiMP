@@ -15,9 +15,12 @@ PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
 DEPTH_ROOT="${1:-$PROJECT_ROOT/MSRAction3D/Depth}"
 NPZ_ROOT="${2:-$PROJECT_ROOT/MSRAction3D/msr_npz}"
 EPOCHS="${3:-200}"
+# Offline CorrNet3D displacements (key "motion", one a##_s##_e##.npz per video, frame step 1).
+MOTION_ROOT="${4:-$PROJECT_ROOT/MSRAction3D/msr_motion}"
 
 echo "Depth root: $DEPTH_ROOT"
 echo "NPZ root:   $NPZ_ROOT"
+echo "Motion root: $MOTION_ROOT"
 echo "Epochs:     $EPOCHS"
 echo ""
 
@@ -35,6 +38,7 @@ fi
 python "$PROJECT_ROOT/0-pretraining-dp.py" \
     --dataset msr \
     --data-path "$NPZ_ROOT" \
+    --motion-path "$MOTION_ROOT" \
     --log-dir "$PROJECT_ROOT/log_ssl_MSR" \
     --model Full_MSR_pretrain \
     --radius 0.1 \

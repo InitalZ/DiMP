@@ -96,11 +96,15 @@ def get_args():
     parser.add_argument('--meta-train', required=True, type=str)
     parser.add_argument('--meta-val', required=True, type=str)
     parser.add_argument('--num-points', default=2048, type=int)
-    parser.add_argument('--clip-len', default=32, type=int)
-    parser.add_argument('--clip-step', default=8, type=int)
-    parser.add_argument('--frame-stride', default=2, type=int)
+    parser.add_argument('--clip-len', default=150, type=int,
+                        help='Frames per sequence (paper: 150-frame inputs, one label per frame)')
+    parser.add_argument('--clip-step', default=150, type=int,
+                        help='Stride between sequence starts (default: non-overlapping 150-frame sequences)')
+    parser.add_argument('--frame-stride', default=1, type=int,
+                        help='Consecutive frames, so every frame of the sequence is labelled')
 
-    parser.add_argument('--radius', default=0.05, type=float)
+    parser.add_argument('--radius', default=0.1, type=float,
+                        help='P4D spatial radius r; must match pretraining (paper: 0.1)')
     parser.add_argument('--nsamples', default=32, type=int)
     parser.add_argument('--spatial-stride', default=32, type=int)
     parser.add_argument('--temporal-kernel-size', default=3, type=int)

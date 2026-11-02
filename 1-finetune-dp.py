@@ -17,7 +17,7 @@ from models.DiMP_Model_Full import DiMPModelFull
 from datasets.hoi4d import HOI4DSubject
 from datasets.msr import MSRAction3D
 from logger import setup_logger
-from utils import AverageMeter, WarmupMultiStepLR, accuracy
+from utils import AverageMeter, WarmupCosineLR, accuracy
 
 def get_args():
     parser = argparse.ArgumentParser('DiMP point cloud video classification finetuning')
@@ -31,7 +31,8 @@ def get_args():
     parser.add_argument('--clip-stride', default=50, type=int)
     parser.add_argument('--frame-stride', default=2, type=int)
 
-    parser.add_argument('--radius', default=0.05, type=float)
+    parser.add_argument('--radius', default=0.1, type=float,
+                        help='P4D spatial radius r; must match pretraining (paper: 0.1)')
     parser.add_argument('--nsamples', default=32, type=int)
     parser.add_argument('--spatial-stride', default=32, type=int)
     parser.add_argument('--temporal-kernel-size', default=3, type=int)
@@ -50,8 +51,6 @@ def get_args():
     parser.add_argument('--weight-decay', '--wd', default=0.05, type=float)
     parser.add_argument('--momentum', default=0.9, type=float)
     parser.add_argument('--lr-warmup-epochs', default=10, type=int)
-    parser.add_argument('--lr-milestones', default=[10, 15], nargs='+', type=int)
-    parser.add_argument('--lr-gamma', default=0.1, type=float)
     parser.add_argument('--workers', default=4, type=int)
     parser.add_argument('--print-freq', default=20, type=int)
 
@@ -175,10 +174,10 @@ def main(args):
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
 
-    scheduler = WarmupMultiStepLR(
+    # Paper (appendix): AdamW with cosine decay.
+    scheduler = WarmupCosineLR(
         optimizer,
-        milestones=args.lr_milestones,
-        gamma=args.lr_gamma,
+        T_max=args.epochs,
         warmup_factor=0.0,
         warmup_iters=args.lr_warmup_epochs,
         warmup_method='linear'

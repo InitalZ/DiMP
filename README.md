@@ -101,6 +101,7 @@ Optional shell helpers: `run_pretrain_msr.sh`, `run_finetune_msr.sh`. Full layou
 python 0-pretraining-dp.py \
   --dataset hoi4d \
   --data-path /path/to/DiMP/hoi4d_npz \
+  --motion-path /path/to/DiMP/hoi4d_motion \
   --data-meta ./datasets/your_train_meta.list \
   --log-dir ./logs \
   --num-points 1024 \
@@ -115,6 +116,7 @@ python 0-pretraining-dp.py \
 python 0-pretraining-dp.py \
   --dataset msr \
   --data-path /path/to/DiMP/MSRAction3D/msr_npz \
+  --motion-path /path/to/DiMP/MSRAction3D/msr_motion \
   --log-dir ./logs \
   --num-points 1024 \
   --batch-size 32 \
@@ -123,7 +125,9 @@ python 0-pretraining-dp.py \
   --model Full_MSR_pretrain
 ```
 
-Optional tuning: `--center-diffusion-mode`, `--radius` (e.g. **0.1** for MSR in some setups), `--use-patch-diffusion`, `--use-motion-diffusion` — see `python 0-pretraining-dp.py --help`. Checkpoints are saved under `{log_dir}/{model}/` (e.g. `./logs/Full_pretrain/checkpoint_last.pth`).
+**Motion targets (`--motion-path`):** inter-frame displacements precomputed offline with a frozen CorrNet3D, one NPZ per video with the same stem as the point cloud NPZ and key `motion` in the same frames × points × 3 layout. `motion[f, i]` is the displacement of point `i` in frame `f` to its correspondence `--frame-stride` frames later (MSR: `--clip-stride`), zeros where that frame does not exist. Required unless `--no-motion-diffusion`.
+
+Defaults follow the paper: `--radius 0.1`, `--clip-len 24`, `--center-diffusion-mode mask_only` (visible centers stay clean), patch diffusion on, `--gamma-center 0.1`, `--motion-weight 1.0`, `--motion-h-intervals 4`, cosine noise schedule. Ablation switches: `--center-diffusion-mode`, `--no-patch-diffusion`, `--no-motion-diffusion` — see `python 0-pretraining-dp.py --help`. Checkpoints are saved under `{log_dir}/{model}/` (e.g. `./logs/Full_pretrain/checkpoint_last.pth`).
 
 ### Action recognition (classification)
 

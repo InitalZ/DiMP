@@ -28,13 +28,13 @@ def get_args():
     parser.add_argument('--data-meta', default='', type=str, help='HOI4D meta list file')
     parser.add_argument('--num-points', default=1024, type=int,
                         help='Points per frame (paper: 1024 for HOI4D/MSR pretraining)')
-    parser.add_argument('--clip-len', default=32, type=int, help='Frames per clip')
+    parser.add_argument('--clip-len', default=24, type=int, help='Frames per clip (paper: 24)')
     parser.add_argument('--clip-stride', default=8, type=int, help='Clip stride')
     parser.add_argument('--frame-stride', default=2, type=int, help='Frame stride')
     parser.add_argument('--sub-clips', default=5, type=int, help='Number of sub-clips for MSR pretraining')
 
-    parser.add_argument('--radius', default=0.05, type=float,
-                        help='P4D spatial radius; use 0.1 for MSRAction3D pretraining if matching paper/scripts')
+    parser.add_argument('--radius', default=0.1, type=float,
+                        help='P4D spatial radius r (paper: 0.1)')
     parser.add_argument('--nsamples', default=32, type=int)
     parser.add_argument('--spatial-stride', default=32, type=int)
     parser.add_argument('--temporal-kernel-size', default=3, type=int)
@@ -57,7 +57,7 @@ def get_args():
 
     parser.add_argument('--epochs', default=200, type=int,
                         help='Training epochs (paper: 200)')
-    parser.add_argument('--batch-size', default=16, type=int)
+    parser.add_argument('--batch-size', default=128, type=int, help='Total batch size (paper: 128 on 8 GPUs)')
     parser.add_argument('--lr', default=0.001, type=float)
     parser.add_argument('--weight-decay', '--wd', default=0.05, type=float)
     parser.add_argument('--momentum', default=0.9, type=float)
@@ -69,12 +69,19 @@ def get_args():
         '--model', default='pretrain', type=str,
         help='Run name; checkpoints are saved under log_dir/model/.'
     )
-    parser.add_argument('--center-diffusion-mode', default='full', type=str,
+    parser.add_argument('--center-diffusion-mode', default='mask_only', type=str,
                        choices=['base', 'vis_only', 'mask_only', 'full'],
-                       help='E3/Full center diffusion mode')
+                       help='Center diffusion mode (paper: mask_only, visible centers stay clean)')
     parser.add_argument('--gamma-center', default=0.1, type=float, help='Center loss weight gamma')
     parser.add_argument('--motion-weight', default=1.0, type=float, help='Motion diffusion loss weight')
-    parser.add_argument('--use-patch-diffusion', action='store_true', help='Enable patch diffusion decoder')
+    parser.add_argument('--use-patch-diffusion', dest='use_patch_diffusion', action='store_true',
+                       help='Enable patch diffusion (noisy masked point embeddings + t_c token)')
+    parser.add_argument('--no-patch-diffusion', dest='use_patch_diffusion', action='store_false',
+                       help='Disable patch diffusion (learnable mask tokens; ablation only)')
+    parser.set_defaults(use_patch_diffusion=True)
+    parser.add_argument('--motion-path', default='', type=str,
+                        help='Directory of offline CorrNet3D displacement NPZ files (key "motion", same '
+                             'stem and layout as the point cloud NPZ); required for motion diffusion')
     parser.add_argument('--use-motion-diffusion', dest='use_motion_diffusion', action='store_true',
                        help='Enable motion diffusion branch')
     parser.add_argument('--no-motion-diffusion', dest='use_motion_diffusion', action='store_false',
@@ -115,6 +122,11 @@ def main(args):
     with open(os.path.join(log_dir, 'args.txt'), 'w') as f:
         f.write(str(args))
 
+    if args.use_motion_diffusion and not args.motion_path:
+        raise ValueError('--motion-path is required for motion diffusion: the motion targets are '
+                         'inter-frame displacements precomputed offline with CorrNet3D')
+    motion_root = args.motion_path if args.use_motion_diffusion else None
+
     if dataset_name == 'hoi4d':
         if not args.data_meta:
             raise ValueError('--data-meta is required when --dataset=hoi4d')
@@ -125,7 +137,8 @@ def main(args):
             step_between_clips=args.clip_stride,
             step_between_frames=args.frame_stride,
             num_points=args.num_points,
-            train=True
+            train=True,
+            motion_root=motion_root
         )
     elif dataset_name == 'msr':
         train_dataset = DiMPMSRAction3D(
@@ -134,7 +147,8 @@ def main(args):
             step_between_clips=args.clip_stride,
             num_points=args.num_points,
             sub_clips=args.sub_clips,
-            train=True
+            train=True,
+            motion_root=motion_root
         )
     else:
         raise ValueError(f'Unsupported dataset: {args.dataset}')
@@ -168,7 +182,9 @@ def main(args):
         motion_h_intervals=args.motion_h_intervals,
         diffusion_T=args.diffusion_T,
     )
-    model = DiMPModelFull(**model_kwargs).cuda()
+    model_without_dp = DiMPModelFull(**model_kwargs).cuda()
+    # Paper: total batch 128 split over 8 GPUs.
+    model = nn.DataParallel(model_without_dp) if torch.cuda.device_count() > 1 else model_without_dp
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -186,7 +202,7 @@ def main(args):
         if os.path.isfile(args.resume):
             ckpt = torch.load(args.resume, map_location='cpu')
             args.start_epoch = ckpt['epoch'] + 1
-            model.load_state_dict(ckpt['model'])
+            model_without_dp.load_state_dict(ckpt['model'])
             optimizer.load_state_dict(ckpt['optimizer'])
             scheduler.load_state_dict(ckpt['scheduler'])
             logger.info(f'Resumed from epoch {ckpt["epoch"]}')
@@ -199,7 +215,7 @@ def main(args):
 
         ckpt = {
             'epoch': epoch,
-            'model': model.state_dict(),
+            'model': model_without_dp.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
             'args': args
@@ -218,14 +234,17 @@ def train_one_epoch(model, loader, optimizer, epoch, args, logger):
     model.train()
     loss_meter = AverageMeter()
 
-    for i, (clips, _) in enumerate(loader):
-        clips = clips.cuda(non_blocking=True)
+    for i, batch in enumerate(loader):
+        clips = batch[0].cuda(non_blocking=True)
+        motion = batch[1].cuda(non_blocking=True) if len(batch) == 3 else None
         if clips.dim() == 5:
 
             bsz, sub_clips, sub_len, num_points, channels = clips.shape
             clips = clips.view(bsz, sub_clips * sub_len, num_points, channels)
+            if motion is not None:
+                motion = motion.view(bsz, sub_clips * sub_len, num_points, channels)
 
-        loss = model(clips)
+        loss = model(clips, motion).mean()
 
         optimizer.zero_grad()
         loss.backward()

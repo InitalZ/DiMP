@@ -19,7 +19,7 @@ def random_jitter(clip: np.ndarray, sigma: float = 0.01) -> np.ndarray:
 
 class HOI4DActionSeg(Dataset):
 
-    def __init__(self, root, meta, clip_len=32, clip_step=8, frame_stride=2,
+    def __init__(self, root, meta, clip_len=150, clip_step=150, frame_stride=1,
                  num_points=2048, train=True, scale_m_to_cm=True):
         super().__init__()
 

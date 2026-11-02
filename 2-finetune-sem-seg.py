@@ -37,7 +37,8 @@ def get_args():
                         help='Stride between clip start frames (default 3 when clip_len=3)')
     parser.add_argument('--frame-stride', default=1, type=int)
 
-    parser.add_argument('--radius', default=0.05, type=float)
+    parser.add_argument('--radius', default=0.1, type=float,
+                        help='P4D spatial radius r; must match pretraining (paper: 0.1)')
     parser.add_argument('--nsamples', default=32, type=int)
     parser.add_argument('--spatial-stride', default=32, type=int)
     parser.add_argument('--temporal-kernel-size', default=3, type=int)

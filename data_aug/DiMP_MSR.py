@@ -18,9 +18,15 @@ def parse_video_name(video_name):
     return action, subject, trial
 
 class DiMPPretrainDataset(Dataset):
+    # If motion_root is given, {motion_root}/{video}.npz must hold key 'motion' with the same
+    # per-frame layout as 'point_clouds': motion[f][i] is the offline CorrNet3D displacement of
+    # point i of frame f to its correspondence in frame f + step_between_clips (zeros if absent).
+    # Items are then (clips, motion, index).
     def __init__(self, root, frames_per_clip=16, step_between_clips=1, num_points=2048,
-                 sub_clips=5, train=True, split='cross_subject', train_subjects=(1, 3, 5, 7, 9)):
+                 sub_clips=5, train=True, split='cross_subject', train_subjects=(1, 3, 5, 7, 9),
+                 motion_root=None):
         super(DiMPPretrainDataset, self).__init__()
+        self.motion_root = motion_root
 
         if split != 'cross_subject':
             raise ValueError(f'Unsupported MSRAction3D split: {split}')
@@ -51,6 +57,8 @@ class DiMPPretrainDataset(Dataset):
                 continue
 
             video_path = os.path.join(root, video_name)
+            if motion_root is not None and not os.path.exists(os.path.join(motion_root, video_name)):
+                continue
             video = np.load(video_path, allow_pickle=True)['point_clouds']
             nframes = video.shape[0]
             if nframes < step_between_clips * (frames_per_clip - 1) + 1:
@@ -74,7 +82,9 @@ class DiMPPretrainDataset(Dataset):
         index, t = self.index_map[idx]
         video = np.load(self.videos[index], allow_pickle=True)['point_clouds']
 
-        clip = [video[t + i * self.step_between_clips] for i in range(self.frames_per_clip)]
+        frame_ids = [t + i * self.step_between_clips for i in range(self.frames_per_clip)]
+        clip = [video[f] for f in frame_ids]
+        point_idx = []
         for i, p in enumerate(clip):
             if p.shape[0] > self.num_points:
                 r = np.random.choice(p.shape[0], size=self.num_points, replace=False)
@@ -83,19 +93,33 @@ class DiMPPretrainDataset(Dataset):
                 r = np.random.choice(p.shape[0], size=residue, replace=False)
                 r = np.concatenate([np.arange(p.shape[0]) for _ in range(repeat)] + [r], axis=0)
             clip[i] = p[r, :]
+            point_idx.append(r)
         clip = np.array(clip, dtype=np.float32)
 
+        scales = np.ones((1, 1, 3), dtype=np.float32)
         if self.train:
             scales = np.random.uniform(0.9, 1.1, size=(1, 1, 3)).astype(np.float32)
             clip = clip * scales
             clip = clip + np.random.normal(0.0, 0.005, clip.shape).astype(np.float32)
 
+        pc = clip.reshape(-1, 3)
+        norm = np.max(np.linalg.norm(pc - pc.mean(axis=0), axis=1)) + 1e-8
         clip = clip_normalize(clip).astype(np.float32)
 
         clips = np.split(clip, indices_or_sections=self.sub_clips, axis=0)
         clips = torch.tensor(np.array(clips))
 
-        return clips, index
+        if self.motion_root is None:
+            return clips, index
+
+        # Displacements follow the same scaling as the coordinates (no translation / jitter).
+        video_name = os.path.basename(self.videos[index])
+        motion_video = np.load(os.path.join(self.motion_root, video_name), allow_pickle=True)['motion']
+        motion = np.array([motion_video[f][r] for f, r in zip(frame_ids, point_idx)], dtype=np.float32)
+        motion = motion * scales / norm
+        motion = torch.tensor(np.array(np.split(motion, indices_or_sections=self.sub_clips, axis=0)))
+
+        return clips, motion, index
 
 if __name__ == '__main__':
     import sys

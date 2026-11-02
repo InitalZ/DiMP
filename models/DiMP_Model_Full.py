@@ -9,26 +9,31 @@ ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 sys.path.append(os.path.join(ROOT_DIR, 'modules'))
 
+import pointnet2_utils
 from point_4d_convolution import P4DConv
 from transformer import Transformer, VisMaskTransformer
 from timm.models.layers import trunc_normal_
 from extensions.chamfer_dist import ChamferDistanceL2
 
 def compute_relative_centers(xyzs):
+    # Global mean over all K tubes of the clip: removes rigid translation while keeping
+    # inter-frame motion (a per-frame mean would cancel it).
+    global_mean = xyzs.mean(dim=(1, 2), keepdim=True)
+    return xyzs - global_mean
 
-    frame_mean = xyzs.mean(dim=2, keepdim=True)
-    return xyzs - frame_mean
+class CosineNoiseSchedule:
+    # DDPM cosine schedule (Nichol & Dhariwal, 2021); timesteps are 1-indexed, t in {1, ..., T}.
 
-class LinearNoiseSchedule:
-
-    def __init__(self, T=2000, beta_start=1e-4, beta_end=0.02):
+    def __init__(self, T=2000, s=0.008, max_beta=0.999):
         self.T = T
-        self.betas = torch.linspace(beta_start, beta_end, T)
+        steps = torch.arange(T + 1, dtype=torch.float64) / T
+        f = torch.cos((steps + s) / (1 + s) * math.pi / 2) ** 2
+        self.betas = (1.0 - f[1:] / f[:-1]).clamp(max=max_beta).float()
         self.alphas = 1.0 - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
 
     def alpha_bar(self, t):
-        return self.alphas_cumprod[t]
+        return self.alphas_cumprod.to(t.device)[t - 1]
 
     def add_noise(self, x_0, t, noise=None):
         if noise is None:
@@ -97,7 +102,7 @@ class ContrastiveLearningModelFull(nn.Module):
 
                  center_diffusion_mode='mask_only',
                  diffusion_T=2000,
-                 gamma_center=1.0,
+                 gamma_center=0.1,
 
                  use_patch_diffusion=True,
 
@@ -126,22 +131,21 @@ class ContrastiveLearningModelFull(nn.Module):
             operator='+', spatial_pooling='max', temporal_pooling='max',
         )
 
+        # phi_enc: joint (xyz, t_f) positional embedding; same module/shape as the
+        # downstream models so it transfers at finetuning time.
+        self.encoder_pos_linear = nn.Linear(4, en_emb_dim)
         self.encoder_transformer = VisMaskTransformer(
             en_emb_dim, en_depth, en_heads, en_head_dim, en_mlp_dim, dropout=dropout1,
         )
 
         if self.pretraining:
 
-            self.noise_schedule = LinearNoiseSchedule(T=diffusion_T)
+            self.noise_schedule = CosineNoiseSchedule(T=diffusion_T)
 
-            self.center_head_vis = nn.Sequential(
-                nn.Linear(en_emb_dim, en_emb_dim), nn.GELU(), nn.Linear(en_emb_dim, 3),
-            )
+            # g_m: center predictor on masked tokens only (L_cen supervises the masked branch).
             self.center_head_mask = nn.Sequential(
                 nn.Linear(en_emb_dim, en_emb_dim), nn.GELU(), nn.Linear(en_emb_dim, 3),
             )
-            trunc_normal_(self.center_head_vis[0].weight, std=0.02)
-            trunc_normal_(self.center_head_vis[2].weight, std=0.02)
             trunc_normal_(self.center_head_mask[0].weight, std=0.02)
             trunc_normal_(self.center_head_mask[2].weight, std=0.02)
 
@@ -153,11 +157,13 @@ class ContrastiveLearningModelFull(nn.Module):
             self.decoder_norm = nn.LayerNorm(de_emb_dim)
 
             if self.use_patch_diffusion:
-                self.patch_noise_embed = nn.Conv1d(
-                    3 * nsamples * temporal_kernel_size, de_emb_dim, 1,
-                )
+                # LinearProj(P^m_{t_c}) -> e^m_{t_c}: masked content embedding shared by encoder and decoder.
+                self.patch_noise_embed = nn.Linear(3 * nsamples * temporal_kernel_size, en_emb_dim)
+                self.decoder_patch_embed = nn.Linear(en_emb_dim, de_emb_dim)
                 self.time_embed = TimeEmbedding(de_emb_dim)
             else:
+                self.enc_mask_token = nn.Parameter(torch.zeros(1, 1, en_emb_dim))
+                trunc_normal_(self.enc_mask_token, std=0.02)
                 self.mask_token = nn.Parameter(torch.zeros(1, 1, de_emb_dim))
                 trunc_normal_(self.mask_token, std=0.02)
 
@@ -197,22 +203,12 @@ class ContrastiveLearningModelFull(nn.Module):
                 t = t / t_max
         return torch.cat([xyzts_flat[..., :3], t], dim=-1)
 
-    def _get_pe(self, C_xyz, t_f, t_c=None, noisy=False):
-
-        if noisy and t_c is not None:
-            alpha_bar = self.noise_schedule.alpha_bar(t_c).to(C_xyz.device)
-            if alpha_bar.dim() == 0:
-                alpha_bar = alpha_bar.unsqueeze(0)
-            for _ in range(C_xyz.dim() - 1):
-                alpha_bar = alpha_bar.unsqueeze(-1)
-            C_norm = C_xyz / torch.sqrt(1.0 - alpha_bar).clamp(min=1e-8)
-        else:
-            C_norm = C_xyz
+    def _get_pe(self, C_xyz, t_f):
 
         t_float = t_f.float().unsqueeze(-1)
         t_max = t_float.max()
         t_norm = t_float / t_max if t_max > 0 else t_float
-        return self.encoder_pos_linear(torch.cat([C_norm, t_norm], dim=-1))
+        return self.encoder_pos_linear(torch.cat([C_xyz, t_norm], dim=-1))
 
     def _get_decoder_pe(self, C_xyz, t_f):
 
@@ -240,7 +236,35 @@ class ContrastiveLearningModelFull(nn.Module):
             overall_mask[i, :] = mask
         return torch.from_numpy(overall_mask).to(torch.bool).to(x.device)
 
-    def forward_encoder(self, x):
+    @torch.no_grad()
+    def _group_tube_motion(self, clips, motion, anchors):
+        # Gathers the offline (CorrNet3D) per-point displacements of each tube's neighbours.
+        # Ball query is repeated with P4DConv's radius / anchors / padding, so neighbour order
+        # matches xyzs_neighbors. Returns (B, L, N, tk - 1, nsamples, 3): frames 1..tk-1 of each
+        # tube, whose displacement to the next frame is always inside the clip.
+        conv = self.tube_embedding
+        pad_l, pad_r = conv.temporal_padding
+        xyz_frames = [f.contiguous() for f in torch.unbind(clips, dim=1)]
+        mot_frames = [f.contiguous() for f in torch.unbind(motion, dim=1)]
+        zeros = torch.zeros_like(mot_frames[0])
+        # Replicate-padded frames are copies of their neighbour, i.e. zero displacement.
+        xyz_frames = [xyz_frames[0]] * pad_l + xyz_frames + [xyz_frames[-1]] * pad_r
+        mot_frames = [zeros] * pad_l + mot_frames + [zeros] * pad_r
+
+        half = conv.temporal_kernel_size // 2
+        tubes = []
+        for l, t in enumerate(range(half, len(xyz_frames) - half, conv.temporal_stride)):
+            anchor = anchors[:, l].contiguous()
+            per_frame = []
+            for i in range(t - half, t + half):
+                idx = pointnet2_utils.ball_query(conv.r, conv.k, xyz_frames[i], anchor)
+                grouped = pointnet2_utils.grouping_operation(
+                    mot_frames[i].transpose(1, 2).contiguous(), idx)
+                per_frame.append(grouped.permute(0, 2, 3, 1))
+            tubes.append(torch.stack(per_frame, dim=2))
+        return torch.stack(tubes, dim=1)
+
+    def forward_encoder(self, x, motion=None):
         xyzs, features, xyzs_neighbors, _ = self.tube_embedding(x)
         features = features.permute(0, 1, 3, 2)
         batch_size, L, N, C = features.shape
@@ -261,6 +285,9 @@ class ContrastiveLearningModelFull(nn.Module):
 
         if self.pretraining:
             xyzs_neighbors = xyzs_neighbors.reshape(batch_size, L * N, self.tk, self.nsamples, 3)
+            motion_tubes = None
+            if motion is not None:
+                motion_tubes = self._group_tube_motion(x, motion, xyzs).reshape(batch_size, L * N, -1)
 
             bool_masked_pos = self.random_masking(xyzts)
 
@@ -273,24 +300,33 @@ class ContrastiveLearningModelFull(nn.Module):
             t_f_vis = xyzts_vis[..., 3]
             t_f_mask = xyzts_mask[..., 3]
 
-            t_c = torch.randint(1, self.noise_schedule.T, (batch_size,), device=x.device).long()
+            # Shared timestep t_c ~ U{1, T} for masked centers and masked point coordinates.
+            t_c = torch.randint(1, self.noise_schedule.T + 1, (batch_size,), device=x.device).long()
 
             C_vis_input = self.noise_schedule.add_noise(C0_vis, t_c) if self._should_noise_vis() else C0_vis
             C_mask_input = self.noise_schedule.add_noise(C0_mask, t_c) if self._should_noise_mask() else C0_mask
 
-            pe_vis = self._get_pe(C_vis_input, t_f_vis, t_c, noisy=self._should_noise_vis())
-            pe_mask = self._get_pe(C_mask_input, t_f_mask, t_c, noisy=self._should_noise_mask())
+            pe_vis = self._get_pe(C_vis_input, t_f_vis)
+            pe_mask = self._get_pe(C_mask_input, t_f_mask)
+
+            # Masked tokens never see clean tube features: their content is e^m_{t_c} = LinearProj(P^m_{t_c}).
+            if self.use_patch_diffusion:
+                P0_mask = xyzs_neighbors[bool_masked_pos].reshape(batch_size, -1, self.tk * self.nsamples * 3)
+                P_mask_tc = self.noise_schedule.add_noise(P0_mask, t_c)
+                e_mask = self.patch_noise_embed(P_mask_tc)
+            else:
+                e_mask = self.enc_mask_token.expand(batch_size, fea_mask.shape[1], -1)
 
             x_vis = fea_vis + pe_vis
-            x_mask = fea_mask + pe_mask
+            x_mask = e_mask + pe_mask
 
             T_v, T_m = self.encoder_transformer(x_vis, x_mask)
 
-            pred_C0_vis = self.center_head_vis(T_v)
             pred_C0_mask = self.center_head_mask(T_m)
-            center_loss = 0.5 * (F.mse_loss(pred_C0_vis, C0_vis) + F.mse_loss(pred_C0_mask, C0_mask))
+            # L_cen = 1/K_m * sum_j ||C_hat_j - C_j||_2^2 (masked tubes only)
+            center_loss = ((pred_C0_mask - C0_mask) ** 2).sum(dim=-1).mean()
 
-            return (T_v, T_m, bool_masked_pos, xyzts, xyzs_neighbors,
+            return (T_v, T_m, bool_masked_pos, xyzts, xyzs_neighbors, e_mask, motion_tubes,
                     C0_vis, C0_mask, pred_C0_mask, t_f_vis, t_f_mask, t_c, center_loss)
         else:
             pos_input = self._norm_t(xyzts)
@@ -308,7 +344,7 @@ class ContrastiveLearningModelFull(nn.Module):
             concat_f = torch.cat([T_v[:, 0], T_v[:, 1:].max(1)[0]], dim=-1)
             return self.mlp_head(concat_f)
 
-    def forward_decoder(self, T_v, mask, xyzts, xyzs_neighbors,
+    def forward_decoder(self, T_v, mask, xyzts, xyzs_neighbors, e_mask, motion_tubes,
                         C0_vis, C0_mask, pred_C0_mask, t_f_vis, t_f_mask, t_c):
         emb_vis = self.decoder_embed(T_v)
         batch_size, N_vis, C_dec = emb_vis.shape
@@ -317,11 +353,8 @@ class ContrastiveLearningModelFull(nn.Module):
         N_masked = gt_points.shape[1]
 
         if self.use_patch_diffusion:
-            gt_flat = gt_points.reshape(batch_size, N_masked, -1)
-            noisy_patches = self.noise_schedule.add_noise(gt_flat, t_c)
-            mask_tokens = self.patch_noise_embed(
-                noisy_patches.transpose(1, 2)
-            ).transpose(1, 2)
+            # Same e^m_{t_c} (same noise sample) as the encoder's masked tokens.
+            mask_tokens = self.decoder_patch_embed(e_mask)
         else:
             mask_tokens = self.mask_token.expand(batch_size, N_masked, -1)
 
@@ -353,22 +386,24 @@ class ContrastiveLearningModelFull(nn.Module):
 
         point_loss = sum(self.criterion_dist(pred_list[i], gt_list[i]) for i in range(self.tk)) / self.tk
 
-        delta_gt = gt_points[:, :, 1:, :, :] - gt_points[:, :, :-1, :, :]
-        delta_gt_flat = delta_gt.reshape(batch_size, N_masked, -1)
-
         T_sched = self.noise_schedule.T
         h = self.motion_h_intervals
         d = T_sched // h
-        cond = emb_all[:, -N_masked:, :]
+        # Motion head is conditioned on the full Z_dec (visible + masked tokens).
+        cond = emb_all
 
-        motion_loss = torch.zeros((), device=delta_gt_flat.device)
-        if self.use_motion_diffusion:
+        motion_loss = torch.zeros((), device=emb_all.device)
+        if self.use_motion_diffusion and motion_tubes is not None:
+            # M_0 in the same [visible, masked] token order as Z_dec.
+            D = motion_tubes.shape[-1]
+            M0 = torch.cat([motion_tubes[~mask].reshape(batch_size, -1, D),
+                            motion_tubes[mask].reshape(batch_size, -1, D)], dim=1)
             for i in range(h):
                 lo = d * i + 1
-                hi = T_sched - 1 if i == h - 1 else d * (i + 1)
+                hi = T_sched if i == h - 1 else d * (i + 1)
                 t_i = torch.randint(lo, hi + 1, (batch_size,), device=cond.device).long()
-                eps = torch.randn_like(delta_gt_flat)
-                M_t_i = self.noise_schedule.add_noise(delta_gt_flat, t_i, noise=eps)
+                eps = torch.randn_like(M0)
+                M_t_i = self.noise_schedule.add_noise(M0, t_i, noise=eps)
                 t_emb = self.motion_time_embed(t_i)
                 eps_hat = self.motion_head(M_t_i, t_emb, cond)
                 motion_loss = motion_loss + F.mse_loss(eps_hat, eps)
@@ -381,23 +416,24 @@ class ContrastiveLearningModelFull(nn.Module):
 
         return point_loss, motion_loss
 
-    def forward(self, clips):
+    def forward(self, clips, motion=None):
         if self.pretraining:
-            enc_out = self.forward_encoder(clips)
+            if self.use_motion_diffusion and motion is None and not self.vis:
+                raise ValueError('Motion diffusion needs the offline CorrNet3D displacements '
+                                 '(pass `motion` with the same shape as `clips`).')
+            enc_out = self.forward_encoder(clips, motion)
             if not isinstance(enc_out, tuple):
                 return enc_out
 
-            (T_v, T_m, mask, xyzts, xyzs_neighbors,
+            (T_v, T_m, mask, xyzts, xyzs_neighbors, e_mask, motion_tubes,
              C0_vis, C0_mask, pred_C0_mask, t_f_vis, t_f_mask, t_c, center_loss) = enc_out
 
+            dec_args = (T_v, mask, xyzts, xyzs_neighbors, e_mask, motion_tubes,
+                        C0_vis, C0_mask, pred_C0_mask, t_f_vis, t_f_mask, t_c)
             if self.vis:
-                return self.forward_decoder(
-                    T_v, mask, xyzts, xyzs_neighbors,
-                    C0_vis, C0_mask, pred_C0_mask, t_f_vis, t_f_mask, t_c)
+                return self.forward_decoder(*dec_args)
 
-            point_loss, motion_loss = self.forward_decoder(
-                T_v, mask, xyzts, xyzs_neighbors,
-                C0_vis, C0_mask, pred_C0_mask, t_f_vis, t_f_mask, t_c)
+            point_loss, motion_loss = self.forward_decoder(*dec_args)
 
             loss = self.gamma_center * center_loss + point_loss + self.motion_weight * motion_loss
             return loss
